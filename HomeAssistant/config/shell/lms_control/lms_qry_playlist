@@ -1,0 +1,41 @@
+###  qry_playlist.sh - Queries LMS server for playlist based on submitted playlist field
+###
+###  Jan 10, 2019 -  Initial file creation, handles both secured and unsecured LMS queries using socat and nc respectively for maximum 
+###                  compatibility.  Note: socat is not supported in Synology NAS and QNAP NAS
+###  Jan 21, 2019 -  Updated curl posts to HA to remove stray quote / double quote
+###
+#!/usr/bin/env bash
+
+source /config/shell/lms_control/utils
+
+PLAYER="-"
+TYPE="playlists"
+OFFSET=0
+COUNT=20
+TERM="${1}"
+TAGS="a"
+
+PLAYLIST_ID=0
+NAME='null'
+
+PARAMS=$(printf '["%s",["%s", "%d","%d","search:%s","tags:%s"]]' "${PLAYER}" "${TYPE}" "${OFFSET}" "${COUNT}" "${TERM}" ${TAGS})
+RESULT=$(lms_jsonrpc "$PARAMS")
+
+# printf '%s\n\n' "${RESULT}"
+
+COUNT=$(echo "${RESULT}" | jq -r '.result.count')
+if [[ "${COUNT}" -gt 0 ]]; then
+    r=$(( ( RANDOM % 3 ) ))
+    PLAYLIST_ID=$(echo "${RESULT}" | jq -r ".result.playlists_loop[${r}].id")
+    NAME=$(echo "${RESULT}" | jq -r ".result.playlists_loop[${r}].playlist")
+fi
+
+printf 'Playlist ID: %d\nName: %s\n\n' ${PLAYLIST_ID} "${NAME}"
+
+ENTITY=sensor.playlist_id
+PAYLOAD=$(printf '{"state":"%s"}' "${PLAYLIST_ID}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
+
+ENTITY=input_text.lms_qry_result
+PAYLOAD=$(printf '{"state":"%s"}' "${NAME}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"

@@ -1,0 +1,24 @@
+###  spot_art_top.sh - Queries Spotify database for its top artist based on submitted artist field
+###
+###  Dec 30, 2018 -  Implemented source file for all common environment variables required (user, pass, clinet keys, tokens, etc..)
+###  Jan 21, 2019 -  Updated curl posts to HA to remove stray quote / double quote
+###
+#!/usr/bin/env bash
+source /config/shell/lms_control/utils
+
+RESULT=$(spotify_search "$(urlencode "${1}")&type=artist")
+printf 'Searchresults:\n%s\n\n' "${RESULT}" >&2
+
+NAME=$(echo ${RESULT} | jq -r '.artists.items[0].name')
+POPULARITY=$(echo ${RESULT} | jq -r '.artists.items[0].popularity')
+URI=$(echo ${RESULT} | jq -r '.artists.items[0].uri')
+
+printf 'URI: %s;\nName: %s;\nPopularity: %s\n\n' "${URI}" "${NAME}" "${POPULARITY}"
+
+ENTITY=sensor.spotify_uri
+PAYLOAD=$(printf '{"state":"%s"}' "${URI}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
+
+ENTITY=input_text.lms_qry_result
+PAYLOAD=$(printf '{"state":"%s"}' "${NAME}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"

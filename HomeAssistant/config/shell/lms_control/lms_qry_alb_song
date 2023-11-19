@@ -1,0 +1,92 @@
+###  qry_alb_song.sh - Queries LMS server for song based on submitted artist, album and song fields
+###
+###  Dec 30, 2018 -  Implemented source file for all common environment variables required (user, pass, client keys, tokens, etc..)
+###  Jan  7, 2019 -  Updated script to handle both secured and unsecured LMS queries using socat and nc respectively for maximum compatibility
+###                  socat is not supported in Synology NAS and QNAP NAS
+###  Jan 21, 2019 -  Updated curl posts to HA to remove stray quote / double quote
+###
+#!/usr/bin/env bash
+
+source /config/shell/lms_control/utils
+
+PLAYER="-"
+TYPE="artists"
+OFFSET=0
+COUNT=20
+TERM="${1}"
+TAGS="a"
+
+ARTIST_COUNT=0
+ARTIST_ID=0
+ARTIST_NAME='null'
+
+ALBUM_COUNT=0
+ALBUM_ID=0
+ALBUM_NAME='null'
+
+TITLE_COUNT=0
+TITLE_ID=0
+NAME='null'
+
+ARTIST_QUERY=""
+ALBUM_QUERY=""
+
+if [[ "${1}" != "_" ]]; then
+    PARAMS=$(printf '["%s",["%s", "%d","%d","search:%s","tags:%s"]]' "${PLAYER}" "${TYPE}" "${OFFSET}" "${COUNT}" "${TERM}" ${TAGS})
+    RESULT=$(lms_jsonrpc "$PARAMS")
+    ARTIST_COUNT=$(echo "${RESULT}" | jq -r '.result.count')
+    if [[ ${ARTIST_COUNT} -gt 0 ]]; then
+        ARTIST_ID=$(echo "${RESULT}" | jq -r '.result.artists_loop[0].id')
+        ARTIST_QUERY=$(printf '"artist_id:%d", ' ${ARTIST_ID})
+    fi
+fi
+
+TAGS="al"
+TERM="${2}"
+TYPE="albums"
+
+if [[ "${2}" != "_" ]]; then
+    if [ ${ARTIST_COUNT} == 0 ]; then
+        PARAMS=$(printf '["%s", ["%s", "%d", "%d", "search:%s", "tags:%s"]]' "${PLAYER}" "${TYPE}" "${OFFSET}" "${COUNT}" "${TERM}" ${TAGS})
+    else
+        PARAMS=$(printf '["%s", ["%s", "%d", "%d", "artist_id:%d", "search:%s", "tags:%s"]]' "${PLAYER}" "${TYPE}" "${OFFSET}" "${COUNT}" "${ARTIST_ID}" "${TERM}" ${TAGS})
+    fi
+    ALBUM_RESULT=$(lms_jsonrpc "$PARAMS")
+    ALBUM_COUNT=$(echo "${ALBUM_RESULT}" | jq -r '.result.count')
+    if [[ ${ALBUM_COUNT} -gt 0 ]]; then
+        ALBUM_ID=$(echo "${ALBUM_RESULT}" | jq -r '.result.albums_loop[0].id')
+        ALBUM_QUERY=$(printf '"album_id:%d", ' ${ALBUM_ID})
+    fi
+fi
+
+TERM="${3}"
+TYPE="titles"
+
+PARAMS=$(printf '["%s", ["%s", "%d", "%d", %s%s"search:%s", "tags:%s"]]' "${PLAYER}" "${TYPE}" "${OFFSET}" "${COUNT}" "${ARTIST_QUERY}" "${ALBUM_QUERY}" "${TERM}" ${TAGS})
+TITLE_RESULT=$(lms_jsonrpc "$PARAMS")
+
+TITLE_COUNT=$(echo "${TITLE_RESULT}" | jq -r '.result.count')
+if [[ "${TITLE_COUNT}" -gt 0 ]]; then
+    ARTIST_NAME=$(echo "${TITLE_RESULT}" | jq -r '.result.titles_loop[0].artist')
+    ALBUM_NAME=$(echo "${TITLE_RESULT}" | jq -r '.result.titles_loop[0].album')
+    TITLE_ID=$(echo "${TITLE_RESULT}" | jq -r '.result.titles_loop[0].id')
+    NAME=$(echo "${TITLE_RESULT}" | jq -r '.result.titles_loop[0].title')
+fi
+
+printf '\nArtist ID: %d\nAlbum ID: %d\nTitle ID: %d\nArtist Name: %s\nAlbum Name: %s\nName: %s\n\n' ${ARTIST_ID} ${ALBUM_ID} ${TITLE_ID} "${ARTIST_NAME}" "${ALBUM_NAME}" "${NAME}"
+
+ENTITY=sensor.art_id
+PAYLOAD=$(printf '{"state":"%s"}' "${ARTIST_ID}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
+
+ENTITY=sensor.alb_id
+PAYLOAD=$(printf '{"state":"%s"}' "${ALBUM_ID}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
+
+ENTITY=sensor.song_id
+PAYLOAD=$(printf '{"state":"%s"}' "${TITLE_ID}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
+
+ENTITY=input_text.lms_qry_result
+PAYLOAD=$(printf '{"state":"%s"}' "${NAME}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"

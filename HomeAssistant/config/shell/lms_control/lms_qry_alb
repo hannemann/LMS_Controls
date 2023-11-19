@@ -1,0 +1,63 @@
+###  qry_alb.sh - Queries LMS server for album based on submitted artist and album fields
+###
+###  Dec 30, 2018 -  Implemented source file for all common environment variables required (user, pass, client keys, tokens, etc..)
+###  Jan  7, 2019 -  Updated script to handle both secured and unsecured LMS queries using socat and nc respectively for maximum compatibility
+###                  socat is not supported in Synology NAS and QNAP NAS
+###  Jan 21, 2019 -  Updated curl posts to HA to remove stray quote / double quote
+###
+#!/usr/bin/env bash
+source /config/shell/lms_control/utils
+
+PLAYER="-"
+TYPE="artists"
+OFFSET=0
+COUNT=20
+TERM="${1}"
+TAGS="a"
+
+ARTIST_COUNT=0
+ARTIST_ID=0
+ARTIST_NAME='null'
+
+ALBUM_COUNT=0
+ALBUM_ID=0
+NAME='null'
+
+if [[ "${1}" != '-' ]]; then
+    PARAMS=$(printf '["%s",["%s", "%d","%d","search:%s","tags:%s"]]' "${PLAYER}" "${TYPE}" "${OFFSET}" "${COUNT}" "${TERM}" ${TAGS})
+    RESULT=$(lms_jsonrpc "$PARAMS")
+    ARTIST_COUNT=$(echo "${RESULT}" | jq -r '.result.count')
+    ARTIST_ID=$(echo "${RESULT}" | jq -r '.result.artists_loop[0].id')
+fi
+
+TAGS="al"
+TERM="${2}"
+TYPE="albums"
+
+if [ ${ARTIST_COUNT} == 0 ]; then
+    PARAMS=$(printf '["%s", ["%s", "%d", "%d", "search:%s", "tags:%s"]]' "${PLAYER}" "${TYPE}" "${OFFSET}" "${COUNT}" "${TERM}" ${TAGS})
+else
+    PARAMS=$(printf '["%s", ["%s", "%d", "%d", "artist_id:%d", "search:%s", "tags:%s"]]' "${PLAYER}" "${TYPE}" "${OFFSET}" "${COUNT}" "${ARTIST_ID}" "${TERM}" ${TAGS})
+fi
+ALBUM_RESULT=$(lms_jsonrpc "$PARAMS")
+
+ALBUM_COUNT=$(echo "${ALBUM_RESULT}" | jq -r '.result.count')
+if [[ "${ALBUM_COUNT}" -gt 0 ]]; then
+    ALBUM_ID=$(echo "${ALBUM_RESULT}" | jq -r '.result.albums_loop[0].id')
+    ARTIST_NAME=$(echo "${ALBUM_RESULT}" | jq -r '.result.albums_loop[0].artist')
+    NAME=$(echo "${ALBUM_RESULT}" | jq -r '.result.albums_loop[0].album')
+fi
+
+printf '\nArtist ID: %d\nAlbum ID: %d\nArtist: %s\nAlbum: %s\n\n' ${ARTIST_ID} ${ALBUM_ID} "${ARTIST_NAME}" "${NAME}"
+
+ENTITY=sensor.art_id
+PAYLOAD=$(printf '{"state":"%s"}' "${ARTIST_ID}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
+
+ENTITY=sensor.alb_id
+PAYLOAD=$(printf '{"state":"%s"}' "${ALBUM_ID}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
+
+ENTITY=input_text.lms_qry_result
+PAYLOAD=$(printf '{"state":"%s"}' "${NAME}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"

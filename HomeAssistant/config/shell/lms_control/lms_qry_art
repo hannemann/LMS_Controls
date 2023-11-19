@@ -1,0 +1,44 @@
+###  qry_art.sh - Queries LMS server for artist based on submitted artist field
+###
+###  Dec 30, 2018 -  Implemented source file for all common environment variables required (user, pass, client keys, tokens, etc..)
+###  Jan  7, 2019 -  Updated script to handle both secured and unsecured LMS queries using socat and nc respectively for maximum compatibility
+###                  socat is not supported in Synology NAS and QNAP NAS
+###  Jan 21, 2019 -  Updated curl posts to HA to remove stray quote / double quote
+###
+#!/usr/bin/env bash
+
+source /config/shell/lms_control/utils
+
+PLAYER="-"
+TYPE="artists"
+OFFSET=0
+COUNT=20
+TERM="${1}"
+TAGS="a"
+
+ARTIST_ID=0
+NAME='null'
+
+PARAMS=$(printf '["%s",["%s", "%d","%d","search:%s","tags:%s"]]' "${PLAYER}" "${TYPE}" "${OFFSET}" "${COUNT}" "${TERM}" ${TAGS})
+RESULT=$(lms_jsonrpc "$PARAMS")
+
+COUNT=$(echo "${RESULT}" | jq -r '.result.count')
+if [[ "${COUNT}" -gt 0 ]]; then
+    ARTIST_ID=$(echo "${RESULT}" | jq -r '.result.artists_loop[0].id')
+    NAME=$(echo "${RESULT}" | jq -r '.result.artists_loop[0].artist')
+fi
+
+## via cli
+# QUERY=$(printf 'artists 0 20 search:%s tags:a' "${1}")
+# RESULT=$(lms_query "${QUERY}")
+# eval declare -A PARSED_RESULT=$( lms_parse_artists "${RESULT}" )
+
+printf 'Artist ID is: %d\nName of artist is: %s\n\n' "${ARTIST_ID}" "${NAME}"
+
+ENTITY=sensor.art_id
+PAYLOAD=$(printf '{"state":"%s"}' "${ARTIST_ID}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
+
+ENTITY=input_text.lms_qry_result
+PAYLOAD=$(printf '{"state":"%s"}' "${NAME}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"

@@ -1,0 +1,53 @@
+###  qry_player_stat.sh - Queries LMS server for status of player based on player_id field
+###
+###  Dec 30, 2018 -  Implemented source file for all common environment variables required (user, pass, client keys, tokens, etc..)
+###  Jan  7, 2019 -  Updated script to handle both secured and unsecured LMS queries using socat and nc respectively for maximum compatibility
+###                  socat is not supported in Synology NAS and QNAP NAS
+###  Jan 21, 2019 -  Updated curl posts to HA to remove stray quote / double quote
+###
+#!/usr/bin/env bash
+
+source /config/shell/lms_control/utils
+
+PLAYER="${1}"
+TYPE="status"
+OFFSET=0
+COUNT=20
+TAGS="a"
+
+SHUFFLE='null'
+REPEAT='null'
+
+PARAMS=$(printf '["%s",["%s", "%d","%d","tags:%s"]]' "${PLAYER}" "${TYPE}" "${OFFSET}" "${COUNT}" ${TAGS})
+RESULT=$(lms_jsonrpc "${PARAMS}")
+
+# printf '%s\n\n' "${RESULT}"
+
+if [[ "${RESULT}" ]]; then
+    VOLUME=$(echo "${RESULT}" | jq -r '.result["mixer volume"]')
+    SHUFFLE=$(echo "${RESULT}" | jq -r '.result["playlist shuffle"]')
+    REPEAT=$(echo "${RESULT}" | jq -r '.result["playlist repeat"]')
+    SLEEP=$(echo "${RESULT}" | jq -r '.result["sleep"]')
+
+    [[ "${REPEAT}" -gt 0 ]] && REPEAT="on" || REPEAT="off"
+    [[ "${SHUFFLE}" -gt 0 ]] && SHUFFLE="on" || SHUFFLE="off"
+    [[ "${SLEEP}" == 'null' ]] && SLEEP=0
+fi
+
+printf 'Volume: %d\nShuffle: %s\nRepeat: %s\nSleep: %d\n\n' "${VOLUME}" "${SHUFFLE}" "${REPEAT}" "${SLEEP}"
+
+ENTITY=sensor.raw_volume
+PAYLOAD=$(printf '{"state":"%s"}' "${VOLUME}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
+
+ENTITY=sensor.raw_shuffle
+PAYLOAD=$(printf '{"state":"%s"}' "${SHUFFLE}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
+
+ENTITY=sensor.raw_repeat
+PAYLOAD=$(printf '{"state":"%s"}' "${REPEAT}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
+
+ENTITY=sensor.raw_sleep
+PAYLOAD=$(printf '{"state":"%s"}' "${SLEEP}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"

@@ -1,0 +1,270 @@
+#!/usr/bin/env bash
+
+##
+# parse yaml file
+#
+function parse_yaml {
+   local prefix=$2
+   local s='[[:space:]]*' w='[a-zA-Z0-9_]*' fs=$(echo @|tr @ '\034')
+   sed -ne "s|^\($s\):|\1|" \
+      -e "s|^\($s\)\($w\)$s:$s[\"']\(.*\)[\"']$s\$|\1$fs\2$fs\3|p" \
+      -e "s|^\($s\)\($w\)$s:$s\(.*\)$s\$|\1$fs\2$fs\3|p"  $1 |
+   awk -F$fs '{
+      indent = length($1)/2;
+      vname[indent] = $2;
+      for (i in vname) {if (i > indent) {delete vname[i]}}
+      if (length($3) > 0) {
+         vn=""; for (i=0; i<indent; i++) {vn=(vn)(vname[i])("_")}
+         printf("%s%s%s=\"%s\"\n", "'$prefix'",vn, $2, $3);
+      }
+   }'
+}
+
+##
+# urlencode utilizing jq
+#
+function urlencode() {
+   printf '"%s"' "${1}" | jq -sRr @uri
+}
+
+##
+# Obtain spotify token
+# invalidate token:
+# touch -m --date @$(( $(date +%s) - 100 )) spotify_token
+#
+function get_spotify_token() {
+   
+   local TOKEN_FILE=/config/shell/lms_control/spotify_token.json
+   local TIMESTAMP=$(date '+%s')
+   if [[ -e ${TOKEN_FILE} ]]; then
+      local MTIME=$(stat -c %Y ${TOKEN_FILE})
+      if [[ ${TIMESTAMP} -le ${MTIME} ]]; then
+         local SP_TOKEN=$(jq -r '.access_token' ${TOKEN_FILE})
+         #local SP_TOKEN='grabbed from file'
+      fi
+   fi
+
+   if [[ ! ${SP_TOKEN} ]]; then
+      local BASIC_AUTH=$(echo -n ${spotify_client_id}:${spotify_client_secret} | base64 | tr -d ' ')
+      local BASIC_AUTH=$(echo ${BASIC_AUTH} | tr -d ' ')
+      local TOKEN_JSON=$(curl -s  -X "POST" -H "Authorization: Basic ${BASIC_AUTH}" -d grant_type=client_credentials https://accounts.spotify.com/api/token)
+      echo ${TOKEN_JSON} > ${TOKEN_FILE}
+      local EXPIRES=$(echo ${TOKEN_JSON} | jq -r '.expires_in')
+      touch -m --date @$(( $(date +%s) + ${EXPIRES} - 5 * 60 )) ${TOKEN_FILE}
+      local SP_TOKEN=$(echo ${TOKEN_JSON} | jq -r '.access_token')
+      #local SP_TOKEN='grabbed from url'
+   fi
+   printf '%s' "${SP_TOKEN}"
+}
+
+##
+# perform spotify search
+#
+function spotify_search() {
+   local LIMIT=${2-5}
+   local QUERY_STRING="${1}"
+   if [[ ${SPOT_MARKET} != '' ]]; then
+      QUERY_STRING="${QUERY_STRING}&market=${SPOT_MARKET}"
+   fi
+   QUERY_STRING="${QUERY_STRING}&limit=5"
+   local RESULT=$(curl -s -X GET "https://api.spotify.com/v1/search?q=${1}" -H "Authorization: Bearer $(get_spotify_token)")
+   printf '%s' "${RESULT}"
+}
+
+##
+# update homeassistant entity
+#
+function ha_update_entity() {
+   local RESULT=$(curl -s -X POST -d "${2}" "${HASS}/api/states/${1}" -H "Authorization: Bearer ${HA_TOKEN}")
+   printf '%s' "${RESULT}"
+}
+
+##
+# perform query to lms jsonrpc
+#
+function lms_jsonrpc() {
+   local AUTH_HEADER=""
+   if [[ "${LMS_USER}" != "null" ]]; then
+      local BASIC_AUTH=$(echo -n ${LMS_USER}:${LMS_PASS} | base64 | tr -d ' ')
+      BASIC_AUTH=$(echo ${BASIC_AUTH} | tr -d ' ')
+      AUTH_HEADER=$(printf 'Authorization: Basic %s' "${BASIC_AUTH}")
+   fi
+
+   local SSL=""
+   local INSECURE=""
+   [[ "${LMS_USE_SSL}" -gt 0 ]] && SSL="s"
+   [[ "${LMS_IGNORE_SSL_ERRORS}" -gt 0 ]] && INSECURE='-k'
+
+   local URL=$(printf 'http%s://%s:%d/jsonrpc.js' "${SSL}" "${LMS_HOST}" ${LMS_JSONRPC_PORT})
+   local PAYLOAD=$(printf '{"id":1,"method":"slim.request","params":%s}' "${1}")
+   local RESULT=$(curl "${INSECURE}" -s -H "${AUTH_HEADER}" -X POST -d "${PAYLOAD}" "${URL}")
+   printf '%s' "${RESULT}"
+}
+
+##
+# perform query to lms cli
+# deprecated
+#
+function lms_query() {
+   local LMS_SECURE=false
+   local DELAY=""
+   if [[ "${LMS_USER}" != "null" ]]; then
+      LMS_SECURE=true
+   fi
+   local QUERY=$(printf "%s \nexit\n" "${1}")
+   if ${LMS_SECURE}; then
+      QUERY=$(printf "login %s %s\n%s" "${LMS_USER}" "${LMS_PASS}" "${QUERY}")
+      DELAY="-i 1"
+   fi
+   #printf '%s' "${QUERY}" >&2
+   local RESULT=$(echo "${QUERY}" | nc ${DELAY} "${LMS_HOST}" "${LMS_CLI_PORT}")
+   #printf '\n\n%s\n\n' "${RESULT}" >&2
+   printf "%s" "${RESULT}"
+}
+
+##
+# parse lms artist search result
+# deprecated
+#
+function lms_parse_artists() {
+   local DATA="${1}"
+   local ID=${DATA#*artists*id%3A}
+   ID=${ID%% artist*3A*}
+   local COUNT=${DATA##*artist*count%3A}
+   COUNT=${COUNT%$'\n'*}
+
+   local NAME=${DATA#*artist*artist%3A}
+   NAME=${NAME%% id*3A*}
+   NAME=${NAME%% count*3A*}
+   NAME=$(echo -e "${NAME//%/\\x}")
+
+   to_lms_result_array "${COUNT}" "${ID}" "${NAME}"
+}
+
+##
+# parse lms album search result
+# deprecated
+#
+function lms_parse_albums() {
+
+   local DATA=${1}
+   local ID=${DATA#*album*tags*id%3A}
+   ID=${ID%% album*3A*}
+   local COUNT=${DATA##*album*count%3A}
+   COUNT=${COUNT%%$'\n'*}
+
+   local NAME=${DATA#*album*album%3A}
+   NAME=${NAME%% artist*3A*}
+   NAME=$(echo -e "${NAME//%/\\x}")
+
+   to_lms_result_array "${COUNT}" "${ID}" "${NAME}"
+}
+
+##
+# parse lms title search result
+# deprecated
+#
+function lms_parse_titles() {
+
+   local DATA=${1}
+   local ID=${DATA#*title*tags*id%3A}
+   ID=${ID%% title*3A*}
+   local COUNT=${DATA##*title*count%3A}
+   COUNT=${COUNT%%$'\n'*}
+
+   local NAME=${DATA#*title*title%3A}
+   NAME=${NAME%% artist*3A*}
+   NAME=$(echo -e "${NAME//%/\\x}")
+
+   to_lms_result_array "${COUNT}" "${ID}" "${NAME}"
+}
+
+##
+# parse lms playlist search result
+# deprecated
+#
+function lms_parse_playlists() {
+
+   local DATA=${1}
+   local ID=${DATA#*playlists*id%3A}
+   ID=${ID%% playlist*3A*}
+   local COUNT=${DATA##*playlist*count%3A}
+   COUNT=${COUNT%%$'\n'*}
+
+   local NAME=${DATA#*playlist*playlist%3A}
+   NAME=${NAME%% count*3A*}
+   NAME=$(echo -e "${NAME//%/\\x}")
+
+   to_lms_result_array "${COUNT}" "${ID}" "${NAME}"
+}
+
+##
+# parse lms player stat
+# deprecated
+#
+function lms_parse_player_stat() {
+   local DATA=${1}
+
+   local VOLUME=${DATA#*volume%3A}
+   VOLUME=${VOLUME%% *}
+
+   local SHUFFLE=${DATA#*shuffle%3A}
+   SHUFFLE=${SHUFFLE%% playlist%20mode*}
+   [[ ${SHUFFLE} == 0 ]] && SHUFFLE=off || SHUFFLE=on
+
+   local REPEAT=${DATA#*repeat%3A}
+   REPEAT=${REPEAT%% playlist%20shuffle*}
+   [[ ${REPEAT} == 0 ]] && REPEAT=off || REPEAT=on
+
+   local SLEEP=${DATA#*sleep%3A}
+   SLEEP=${SLEEP%% will_sleep*}
+   [[ ${#SLEEP} -gt 8 ]] && SLEEP=0
+
+   declare -A RESULT=( [VOLUME]="${VOLUME}" [SHUFFLE]="${SHUFFLE}" [REPEAT]="${REPEAT}" [SLEEP]="${SLEEP}" )
+   local RETURN="$( declare -p RESULT )"
+   local IFS=$'\v';
+   echo "${RETURN#*=}"
+   IFS=' '$'\t'$'\n';
+}
+
+##
+# create lms result array
+# deprecated
+#
+function to_lms_result_array() {
+   if [[ ${1} -eq 0 ]]; then
+      local ID=0
+      local NAME=null
+   else
+      local ID="${2}"
+      local NAME="${3}"
+   fi
+
+   declare -A RESULT=( [COUNT]="${1}" [ID]="${ID}" [NAME]="${NAME}" )
+   local RETURN="$( declare -p RESULT )"
+   local IFS=$'\v';
+   echo "${RETURN#*=}"
+   IFS=' '$'\t'$'\n';
+}
+
+##
+# parse secrets file
+#
+eval $(parse_yaml /config/secrets.yaml)
+
+##
+# assign variables from secrets
+#
+HASS=${lms_control_ha_url}
+HA_TOKEN=${lms_control_ha_token}
+LMS_HOST=${lms_host}
+LMS_CLI_PORT=${lms_cli_port}
+LMS_JSONRPC_PORT=${lms_jsonrpc_port}
+LMS_USER=${lms_user}
+LMS_PASS=${lms_pass}
+LMS_USE_SSL=${lms_use_ssl}
+LMS_IGNORE_SSL_ERRORS=${lms_ignore_ssl_errors}
+SPOT_CLIENT=${spotify_client_id}
+SPOT_SECRET=${spotify_client_secret}
+SPOT_MARKET=${spotify_market}
+

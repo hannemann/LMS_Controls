@@ -1,0 +1,32 @@
+###  spot_playlist.sh - Queries Spotify database for playlist based on submitted playlist field
+###
+###  Jan 26, 2019 -  Added random function to pick 1 (at random) of top 10 returned playlists
+###  Dec 30, 2018 -  Implemented source file for all common environment variables required (user, pass, clinet keys, tokens, etc..)
+###  Jan 21, 2019 -  Updated curl posts to HA to remove stray quote / double quote
+###
+#!/usr/bin/env bash
+source /config/shell/lms_control/utils
+
+RANGE=20
+MAX=$(( 2**15/${RANGE}*${RANGE} ))
+r=${RANDOM}
+until [ ${r} -lt ${MAX} ]; do
+    r=${RANDOM}
+done
+
+PICK=$(( ${r} % ${RANGE} ))
+RESULT=$(spotify_search "$(urlencode "${1}")&type=playlist" ${RANGE})
+printf 'Searchresults:\n%s\n\n' "${RESULT}" >&2
+
+URI=$(echo $RESULT | jq -r ".playlists.items[${PICK}].uri")
+NAME=$(echo $RESULT | jq -r ".playlists.items[${PICK}].name")
+
+printf 'URI: %s;\nName: %s;\n\n' "${URI}" "${NAME}"
+
+ENTITY=sensor.spotify_uri
+PAYLOAD=$(printf '{"state":"%s"}' "${URI}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
+
+ENTITY=input_text.lms_qry_result
+PAYLOAD=$(printf '{"state":"%s"}' "${NAME}")
+printf '%s:\n%s\n\n' "${ENTITY}" "$(ha_update_entity "${ENTITY}" "${PAYLOAD}")"
